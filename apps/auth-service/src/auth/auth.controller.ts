@@ -1,11 +1,26 @@
 import { Controller } from '@nestjs/common';
-import { MessagePattern } from '@nestjs/microservices';
+import { MessagePattern, Payload } from '@nestjs/microservices';
+import { AuthService } from './auth.service';
+import { RegisterAuthDto } from './dto/register-auth.dto';
+import { LoginDto } from './dto/login.dto';
+import { RefreshDto } from './dto/refresh.dto';
 
-@Controller('auth')
+@Controller()
 export class AuthController {
-  @MessagePattern('create_auth')
-  createAuth(auth: any) {
-    console.log({ message: 'Auth data received on the Microservice:', auth });
-    return { message: 'Auth created ', auth };
+  constructor(private readonly auth: AuthService) {}
+
+  @MessagePattern('auth.register')
+  register(@Payload() dto: RegisterAuthDto) {
+    return this.auth.register(dto);
+  }
+
+  @MessagePattern('auth.login')
+  login(@Payload() dto: LoginDto) {
+    return this.auth.login(dto);
+  }
+
+  @MessagePattern('auth.refresh')
+  refresh(@Payload() dto: RefreshDto) {
+    return this.auth.refresh(dto.refreshToken);
   }
 }

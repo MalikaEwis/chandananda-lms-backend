@@ -8,17 +8,29 @@ import { MICROSERVICES_CLIENTS } from 'src/constants';
       {
         name: MICROSERVICES_CLIENTS.AUTH_SERVICE,
         transport: Transport.TCP,
-        options: { port: 4001 },
+        options: {
+          port: 4001,
+          retryAttempts: 5,
+          retryDelay: 1000,
+        },
       },
       {
         name: MICROSERVICES_CLIENTS.USERS_SERVICE,
         transport: Transport.TCP,
-        options: { port: 4002 },
+        options: {
+          port: 4002,
+          retryAttempts: 5,
+          retryDelay: 1000,
+        },
       },
       {
         name: MICROSERVICES_CLIENTS.WORKFLOW_SERVICE,
         transport: Transport.TCP,
-        options: { port: 4003 },
+        options: {
+          port: 4003,
+          retryAttempts: 5,
+          retryDelay: 1000,
+        },
       },
     ]),
   ],

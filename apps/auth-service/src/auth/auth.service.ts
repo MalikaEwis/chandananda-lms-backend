@@ -1,18 +1,17 @@
-import {
-  BadRequestException,
-  Injectable,
-  UnauthorizedException,
-} from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
+import { Inject, UnauthorizedException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import * as bcrypt from 'bcrypt';
+import { ClientProxy, RpcException } from '@nestjs/microservices';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { firstValueFrom } from 'rxjs';
+import * as bcrypt from 'bcrypt';
+import { IsNull, Repository } from 'typeorm';
+
 import { AuthAccount } from './entities/auth-account.entity';
 import { RefreshToken } from './entities/refresh-token.entity';
 import { RegisterAuthDto } from './dto/register-auth.dto';
 import { LoginDto } from './dto/login.dto';
-import { IsNull } from 'typeorm';
 
 @Injectable()
 export class AuthService {
@@ -20,12 +19,16 @@ export class AuthService {
     @InjectRepository(AuthAccount) private authRepo: Repository<AuthAccount>,
     @InjectRepository(RefreshToken)
     private refreshRepo: Repository<RefreshToken>,
+    @Inject('USER_SERVICE') private usersClient: ClientProxy,
     private jwt: JwtService,
     private cfg: ConfigService,
   ) {}
 
+  private unauthorized(message: string): never {
+    throw new RpcException({ statusCode: 401, message, error: 'Unauthorized' });
+  }
+
   private async hashToken(token: string) {
-    // bcrypt is fine here too; keeps it simple
     return bcrypt.hash(token, 10);
   }
 
@@ -38,7 +41,7 @@ export class AuthService {
     email: string;
     role?: string;
   }) {
-    const expiresIn = this.cfg.get<string>('JWT_ACCESS_EXPIRES') ?? '15m';
+    const expiresIn = this.cfg.get<string>('JWT_ACCESS_EXPIRES') ?? '45m';
     const secret = this.cfg.get<string>('JWT_ACCESS_SECRET');
     return this.jwt.sign(payload as any, { secret, expiresIn } as any);
   }
@@ -50,23 +53,35 @@ export class AuthService {
   }
 
   async register(dto: RegisterAuthDto) {
-    const exists = await this.authRepo.findOne({ where: { email: dto.email } });
-    if (exists) throw new BadRequestException('Email already registered');
+    const tenantDomain = dto.tenantDomain
+      ? dto.tenantDomain.trim().toLowerCase()
+      : 'cc.lk';
+
+    const exists = await this.authRepo.findOne({
+      where: { email: dto.email, tenantDomain },
+    });
+    if (exists)
+      throw new BadRequestException('Email already registered in this tenant');
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
+
     const account = await this.authRepo.save({
       email: dto.email,
+      tenantDomain,
       userId: dto.userId,
       passwordHash,
       status: 'ACTIVE',
       failedLoginAttempts: 0,
       lockedUntil: null,
+      role: dto.role ?? null,
     });
 
     const accessToken = this.signAccessToken({
       sub: account.userId,
       email: account.email,
+      role: account.role ?? undefined,
     });
+
     const refreshToken = this.signRefreshToken({
       sub: account.userId,
       email: account.email,
@@ -91,47 +106,102 @@ export class AuthService {
   }
 
   async login(dto: LoginDto) {
-    const account = await this.authRepo.findOne({
-      where: { email: dto.email },
-    });
-    if (!account) throw new UnauthorizedException('Invalid credentials');
+    try {
+      const tenantDomain = dto.tenantDomain
+        ? dto.tenantDomain.trim().toLowerCase()
+        : 'cc.lk';
 
-    if (account.status !== 'ACTIVE')
-      throw new UnauthorizedException('Account not active');
+      // 1) Find auth account by email and tenantDomain
+      const account = await this.authRepo.findOne({
+        where: { email: dto.email, tenantDomain },
+      });
+      if (!account) this.unauthorized('Invalid credentials');
 
-    const ok = await bcrypt.compare(dto.password, account.passwordHash);
-    if (!ok) throw new UnauthorizedException('Invalid credentials');
+      // 2) Block inactive auth accounts early
+      if (account.status !== 'ACTIVE') this.unauthorized('Account not active');
 
-    const accessToken = this.signAccessToken({
-      sub: account.userId,
-      email: account.email,
-    });
-    const refreshToken = this.signRefreshToken({
-      sub: account.userId,
-      email: account.email,
-    });
+      // 3) Check user-service status (source of truth for ACTIVE/INACTIVE)
+      let user: any;
+      try {
+        user = await firstValueFrom(
+          this.usersClient.send('users.findByEmail', {
+            email: dto.email,
+            tenantDomain,
+          }),
+        );
+      } catch (err) {
+        // Log the actual error for debugging
+        console.error('User service error:', {
+          message: err?.message,
+          code: err?.code,
+          stack: err?.stack,
+        });
 
-    const refreshHash = await this.hashToken(refreshToken);
-    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+        // Throw appropriate error based on error type
+        if (err?.code === 'ECONNREFUSED' || err?.message?.includes('connect')) {
+          throw new RpcException({
+            statusCode: 503,
+            message: 'User service unavailable',
+            error: 'ServiceUnavailable',
+          });
+        }
 
-    await this.refreshRepo.save({
-      authAccountId: account.id,
-      tokenHash: refreshHash,
-      expiresAt,
-      revokedAt: null,
-    });
+        this.unauthorized('User service unavailable');
+      }
 
-    return {
-      userId: account.userId,
-      email: account.email,
-      accessToken,
-      refreshToken,
-    };
+      if (!user) this.unauthorized('User profile not found');
+      if (user.status !== 'ACTIVE') this.unauthorized('Account is inactive');
+
+      // 4) Verify password
+      const ok = await bcrypt.compare(dto.password, account.passwordHash);
+      if (!ok) this.unauthorized('Invalid credentials');
+
+      const accessToken = this.signAccessToken({
+        sub: account.userId,
+        email: account.email,
+        role: account.role ?? undefined,
+      });
+
+      const refreshToken = this.signRefreshToken({
+        sub: account.userId,
+        email: account.email,
+      });
+
+      const refreshHash = await this.hashToken(refreshToken);
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+
+      await this.refreshRepo.save({
+        authAccountId: account.id,
+        tokenHash: refreshHash,
+        expiresAt,
+        revokedAt: null,
+      });
+
+      return {
+        userId: account.userId,
+        email: account.email,
+        accessToken,
+        refreshToken,
+      };
+    } catch (err) {
+      // If it's already an RpcException, re-throw it
+      if (err instanceof RpcException) {
+        throw err;
+      }
+      // Log unexpected errors
+      console.error('Unexpected login error:', err);
+      throw new RpcException({
+        statusCode: 500,
+        message: 'Internal server error',
+        error: 'InternalServerError',
+      });
+    }
   }
 
   async refresh(refreshToken: string) {
     const secret = this.cfg.get<string>('JWT_REFRESH_SECRET');
     let payload: any;
+
     try {
       payload = this.jwt.verify(refreshToken, { secret });
     } catch {
@@ -143,7 +213,6 @@ export class AuthService {
     });
     if (!account) throw new UnauthorizedException('Invalid refresh token');
 
-    // find latest non-revoked refresh tokens for this account
     const tokens = await this.refreshRepo.find({
       where: { authAccountId: account.id, revokedAt: IsNull() },
       order: { createdAt: 'DESC' },
@@ -161,13 +230,14 @@ export class AuthService {
     const accessToken = this.signAccessToken({
       sub: account.userId,
       email: account.email,
+      role: account.role ?? undefined,
     });
+
     const newRefreshToken = this.signRefreshToken({
       sub: account.userId,
       email: account.email,
     });
 
-    // revoke old token (simple rotation)
     match.revokedAt = new Date();
     await this.refreshRepo.save(match);
 

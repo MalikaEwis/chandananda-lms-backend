@@ -1,4 +1,10 @@
-import { IsEmail, IsInt, IsString, MinLength } from 'class-validator';
+import {
+  IsEmail,
+  IsInt,
+  IsString,
+  MinLength,
+  IsOptional,
+} from 'class-validator';
 
 export class RegisterAuthDto {
   @IsEmail()
@@ -10,4 +16,12 @@ export class RegisterAuthDto {
 
   @IsInt()
   userId: number;
+
+  @IsOptional()
+  @IsString()
+  role?: string;
+
+  @IsOptional()
+  @IsString()
+  tenantDomain?: string;
 }

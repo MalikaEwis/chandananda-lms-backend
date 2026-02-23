@@ -9,13 +9,16 @@ import {
 export type AuthStatus = 'ACTIVE' | 'LOCKED' | 'DISABLED';
 
 @Entity({ name: 'auth_accounts' })
+@Index(['email', 'tenantDomain'], { unique: true })
 export class AuthAccount {
   @PrimaryGeneratedColumn()
   id: number;
 
-  @Index({ unique: true })
   @Column({ length: 190 })
   email: string;
+
+  @Column({ length: 100, default: 'cc.lk' })
+  tenantDomain: string;
 
   // userId belongs to user-service; we store it as reference only
   @Column()
@@ -23,6 +26,9 @@ export class AuthAccount {
 
   @Column({ name: 'password_hash' })
   passwordHash: string;
+
+  @Column({ type: 'varchar', length: 20, nullable: true })
+  role: string | null;
 
   @Column({ type: 'varchar', length: 20, default: 'ACTIVE' })
   status: AuthStatus;

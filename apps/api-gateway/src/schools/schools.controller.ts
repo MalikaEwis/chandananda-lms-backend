@@ -5,51 +5,35 @@ import {
   HttpException,
   HttpStatus,
   Inject,
+  Param,
   Post,
   Req,
   UseGuards,
-  Patch,
-  Param,
-  Query,
 } from '@nestjs/common';
-
 import { ClientProxy } from '@nestjs/microservices';
 import { firstValueFrom, throwError } from 'rxjs';
 import { catchError } from 'rxjs/operators';
 import type { Request } from 'express';
-import { MICROSERVICES_CLIENTS } from 'src/constants';
-import { JwtAuthGuard } from 'src/auth/jwt.guard';
-import { Roles } from 'src/auth/roles.decorator';
-import { RolesGuard } from 'src/auth/roles.guard';
-import { IsEmail, IsIn, IsString, MinLength } from 'class-validator';
+import { MICROSERVICES_CLIENTS } from '../constants';
+import { CreateSchoolDto } from './dto/create-school.dto';
+import { JwtAuthGuard } from '../auth/jwt.guard';
+import { RolesGuard } from '../auth/roles.guard';
+import { Roles } from '../auth/roles.decorator';
 
-class CreateUserDto {
-  @IsEmail() email: string;
-  @IsString() @MinLength(1) firstName: string;
-  @IsString() @MinLength(1) lastName: string;
-  @IsIn(['ADMIN', 'PRINCIPAL', 'TEACHER', 'PARENT', 'STUDENT', 'STAFF'])
-  role: string;
-}
-
-@Controller('users')
-export class UsersController {
+@Controller('schools')
+export class SchoolsController {
   constructor(
     @Inject(MICROSERVICES_CLIENTS.USERS_SERVICE)
     private usersClient: ClientProxy,
   ) {}
 
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
   @Get()
-  async list(@Req() req: Request, @Query('schoolId') schoolId?: string) {
+  async list(@Req() req: Request) {
     const tenantDomain = req.tenantDomain ?? 'cc.lk';
 
     return firstValueFrom(
       this.usersClient
-        .send('users.list', {
-          tenantDomain,
-          schoolId: schoolId ? Number(schoolId) : undefined,
-        })
+        .send('schools.list', { tenantDomain })
         .pipe(
           catchError((err) => {
             // RpcException structure: { error: { error: { statusCode, message, error } } }
@@ -70,38 +54,14 @@ export class UsersController {
     );
   }
 
-  @UseGuards(JwtAuthGuard)
-  @Get('me')
-  async me(@Req() req: any) {
-    return firstValueFrom(
-      this.usersClient.send('users.findById', req.user.userId).pipe(
-        catchError((err) => {
-          // RpcException structure: { error: { error: { statusCode, message, error } } }
-          const payload = err?.error?.error ?? err?.error ?? err;
-          const statusCode =
-            payload?.statusCode ?? HttpStatus.INTERNAL_SERVER_ERROR;
-          const message = Array.isArray(payload?.message)
-            ? payload.message.join(', ')
-            : payload?.message ?? 'Internal server error';
-          const error = payload?.error ?? 'Error';
-
-          return throwError(
-            () => new HttpException({ statusCode, message, error }, statusCode),
-          );
-        }),
-      ),
-    );
-  }
-
-  @UseGuards(JwtAuthGuard)
-  @Get('me/schools')
-  async getMySchools(@Req() req: any) {
+  @Get(':id')
+  async getById(@Req() req: Request, @Param('id') id: string) {
     const tenantDomain = req.tenantDomain ?? 'cc.lk';
 
     return firstValueFrom(
       this.usersClient
-        .send('users.getMySchools', {
-          userId: req.user.userId,
+        .send('schools.getById', {
+          id: Number(id),
           tenantDomain,
         })
         .pipe(
@@ -124,79 +84,47 @@ export class UsersController {
     );
   }
 
-  // Admin-only create user
+  @Get(':id/users')
+  async listUsers(@Req() req: Request, @Param('id') id: string) {
+    const tenantDomain = req.tenantDomain ?? 'cc.lk';
+
+    return firstValueFrom(
+      this.usersClient
+        .send('schools.listUsers', {
+          schoolId: Number(id),
+          tenantDomain,
+        })
+        .pipe(
+          catchError((err) => {
+            // RpcException structure: { error: { error: { statusCode, message, error } } }
+            const payload = err?.error?.error ?? err?.error ?? err;
+            const statusCode =
+              payload?.statusCode ?? HttpStatus.INTERNAL_SERVER_ERROR;
+            const message = Array.isArray(payload?.message)
+              ? payload.message.join(', ')
+              : payload?.message ?? 'Internal server error';
+            const error = payload?.error ?? 'Error';
+
+            return throwError(
+              () =>
+                new HttpException({ statusCode, message, error }, statusCode),
+            );
+          }),
+        ),
+    );
+  }
+
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
   @Post()
-  async create(@Body() dto: CreateUserDto) {
-    return firstValueFrom(
-      this.usersClient.send('users.create', dto).pipe(
-        catchError((err) => {
-          // RpcException structure: { error: { error: { statusCode, message, error } } }
-          const payload = err?.error?.error ?? err?.error ?? err;
-          const statusCode =
-            payload?.statusCode ?? HttpStatus.INTERNAL_SERVER_ERROR;
-          const message = Array.isArray(payload?.message)
-            ? payload.message.join(', ')
-            : payload?.message ?? 'Internal server error';
-          const error = payload?.error ?? 'Error';
-
-          return throwError(
-            () => new HttpException({ statusCode, message, error }, statusCode),
-          );
-        }),
-      ),
-    );
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
-  @Patch(':id/status')
-  async updateStatus(
-    @Param('id') id: string,
-    @Body() body: { status: 'ACTIVE' | 'INACTIVE' },
-  ) {
-    return firstValueFrom(
-      this.usersClient
-        .send('users.updateStatus', {
-          userId: Number(id),
-          status: body.status,
-        })
-        .pipe(
-          catchError((err) => {
-            // RpcException structure: { error: { error: { statusCode, message, error } } }
-            const payload = err?.error?.error ?? err?.error ?? err;
-            const statusCode =
-              payload?.statusCode ?? HttpStatus.INTERNAL_SERVER_ERROR;
-            const message = Array.isArray(payload?.message)
-              ? payload.message.join(', ')
-              : payload?.message ?? 'Internal server error';
-            const error = payload?.error ?? 'Error';
-
-            return throwError(
-              () =>
-                new HttpException({ statusCode, message, error }, statusCode),
-            );
-          }),
-        ),
-    );
-  }
-
-  @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
-  @Post(':userId/schools/:schoolId')
-  async assignSchool(
-    @Req() req: Request,
-    @Param('userId') userId: string,
-    @Param('schoolId') schoolId: string,
-  ) {
+  async create(@Req() req: Request, @Body() dto: CreateSchoolDto) {
     const tenantDomain = req.tenantDomain ?? 'cc.lk';
 
     return firstValueFrom(
       this.usersClient
-        .send('users.assignSchool', {
-          userId: Number(userId),
-          schoolId: Number(schoolId),
+        .send('schools.create', {
+          name: dto.name,
+          code: dto.code,
           tenantDomain,
         })
         .pipe(

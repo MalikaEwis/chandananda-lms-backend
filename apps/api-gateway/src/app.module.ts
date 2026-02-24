@@ -5,6 +5,7 @@ import { AppService } from './app.service';
 import { AuthModule } from './auth/auth.module';
 import { UsersController } from './users/users.controller';
 import { SchoolsController } from './schools/schools.controller';
+import { WorkflowsController } from './workflows/workflows.controller';
 import { MicroservicesModule } from './microservices/microservices.module';
 import { TenantMiddleware } from './middleware/tenant.middleware';
 
@@ -14,7 +15,7 @@ import { TenantMiddleware } from './middleware/tenant.middleware';
     MicroservicesModule,
     AuthModule,
   ],
-  controllers: [AppController, UsersController, SchoolsController],
+  controllers: [AppController, UsersController, SchoolsController, WorkflowsController],
   providers: [AppService],
 })
 export class AppModule implements NestModule {

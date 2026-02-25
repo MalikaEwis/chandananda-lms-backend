@@ -4,6 +4,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   OneToMany,
@@ -14,6 +15,7 @@ import { WorkflowTemplate } from './workflow-template.entity';
 import { WorkflowTask } from './workflow-task.entity';
 
 @Entity({ name: 'workflow_instances' })
+@Index(['tenantDomain', 'templateId', 'businessReference'], { unique: true })
 export class WorkflowInstance {
   @PrimaryGeneratedColumn()
   id: number;

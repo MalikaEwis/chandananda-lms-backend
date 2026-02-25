@@ -18,6 +18,7 @@ export enum WorkflowStatus {
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
   REGISTERED = 'REGISTERED',
+  CANCELLED = 'CANCELLED',
 }
 
 export enum TaskStatus {

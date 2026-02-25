@@ -1,9 +1,11 @@
 import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 
-export class SkipTaskDto {
-  @IsInt()
-  @Min(1)
-  taskId: number;
+export class CancelWorkflowDto {
+  @IsString()
+  businessReference: string;
+
+  @IsString()
+  templateCode: string;
 
   @IsInt()
   @Min(1)
@@ -11,9 +13,9 @@ export class SkipTaskDto {
 
   @IsString()
   @IsOptional()
-  tenantDomain?: string;
+  reason?: string;
 
   @IsString()
   @IsOptional()
-  callerRole?: string;
+  tenantDomain?: string;
 }

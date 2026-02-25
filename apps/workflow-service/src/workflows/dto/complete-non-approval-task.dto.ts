@@ -22,4 +22,8 @@ export class CompleteNonApprovalTaskDto {
   @IsString()
   @IsOptional()
   tenantDomain?: string;
+
+  @IsString()
+  @IsOptional()
+  callerRole?: string;
 }

@@ -68,6 +68,30 @@ export class WorkflowsController {
   }
 
   @UseGuards(JwtAuthGuard)
+  @Post('instances/cancel')
+  async cancelInstance(@Req() req: Request, @Body() body: any) {
+    const tenantDomain = req.tenantDomain ?? 'cc.lk';
+
+    return firstValueFrom(
+      this.workflowClient
+        .send('workflows.instance.cancel', { ...body, tenantDomain })
+        .pipe(catchError(rpcError)),
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('instances/mark-registered')
+  async markRegistered(@Req() req: Request, @Body() body: any) {
+    const tenantDomain = req.tenantDomain ?? 'cc.lk';
+
+    return firstValueFrom(
+      this.workflowClient
+        .send('workflows.instance.markRegistered', { ...body, tenantDomain })
+        .pipe(catchError(rpcError)),
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('instances/by-reference/:businessReference')
   async getInstanceByReference(
     @Req() req: Request,
@@ -125,12 +149,14 @@ export class WorkflowsController {
     @Body() body: { action: 'APPROVE' | 'REJECT'; actorUserId: number; comment?: string },
   ) {
     const tenantDomain = req.tenantDomain ?? 'cc.lk';
+    const callerRole = (req as any).user?.role as string | undefined;
 
     return firstValueFrom(
       this.workflowClient
         .send('workflows.task.complete', {
           taskId: Number(taskId),
           tenantDomain,
+          callerRole,
           ...body,
         })
         .pipe(catchError(rpcError)),
@@ -166,12 +192,14 @@ export class WorkflowsController {
     @Body() body: { claimantUserId: number },
   ) {
     const tenantDomain = req.tenantDomain ?? 'cc.lk';
+    const callerRole = (req as any).user?.role as string | undefined;
 
     return firstValueFrom(
       this.workflowClient
         .send('workflows.task.claim', {
           taskId: Number(taskId),
           tenantDomain,
+          callerRole,
           ...body,
         })
         .pipe(catchError(rpcError)),
@@ -191,12 +219,14 @@ export class WorkflowsController {
     },
   ) {
     const tenantDomain = req.tenantDomain ?? 'cc.lk';
+    const callerRole = (req as any).user?.role as string | undefined;
 
     return firstValueFrom(
       this.workflowClient
         .send('workflows.task.completeNonApproval', {
           taskId: Number(taskId),
           tenantDomain,
+          callerRole,
           ...body,
         })
         .pipe(catchError(rpcError)),
@@ -211,12 +241,14 @@ export class WorkflowsController {
     @Body() body: { actorUserId: number },
   ) {
     const tenantDomain = req.tenantDomain ?? 'cc.lk';
+    const callerRole = (req as any).user?.role as string | undefined;
 
     return firstValueFrom(
       this.workflowClient
         .send('workflows.task.skipOptional', {
           taskId: Number(taskId),
           tenantDomain,
+          callerRole,
           ...body,
         })
         .pipe(catchError(rpcError)),

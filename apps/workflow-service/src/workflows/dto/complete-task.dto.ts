@@ -19,4 +19,8 @@ export class CompleteTaskDto {
   @IsString()
   @IsOptional()
   tenantDomain?: string;
+
+  @IsString()
+  @IsOptional()
+  callerRole?: string;
 }

@@ -6,6 +6,21 @@ import { WorkflowTask } from './entities/workflow-task.entity';
 import { WorkflowInstance } from './entities/workflow-instance.entity';
 import { WorkflowStep } from './entities/workflow-step.entity';
 import { TaskStatus, WorkflowStatus, StepType } from './enums';
+
+// Roles that bypass per-step role restrictions
+const SUPERUSER_ROLES = ['ADMIN', 'SUPER_ADMIN'];
+
+function assertCallerRole(requiredRole: string | null, callerRole: string | undefined): void {
+  if (!requiredRole) return;
+  if (!callerRole || (!SUPERUSER_ROLES.includes(callerRole) && callerRole !== requiredRole)) {
+    throw new RpcException({
+      statusCode: 403,
+      message: `Insufficient role. Required: ${requiredRole}`,
+      error: 'Forbidden',
+    });
+  }
+}
+
 import { AssignTaskDto } from './dto/assign-task.dto';
 import { ClaimTaskDto } from './dto/claim-task.dto';
 import { CompleteNonApprovalTaskDto } from './dto/complete-non-approval-task.dto';
@@ -82,6 +97,9 @@ export class WorkflowTaskService {
       });
     }
 
+    // Enforce required role before allowing claim
+    assertCallerRole(task.step.requiredRole, dto.callerRole);
+
     // Prevent claim if already assigned to someone else
     if (
       task.assignedToUserId !== null &&
@@ -139,6 +157,9 @@ export class WorkflowTaskService {
         error: 'Conflict',
       });
     }
+
+    // Enforce required role
+    assertCallerRole(task.step.requiredRole, dto.callerRole);
 
     // This endpoint is for non-approval steps only
     if (task.step.stepType === StepType.APPROVAL) {
@@ -265,6 +286,9 @@ export class WorkflowTaskService {
         error: 'Conflict',
       });
     }
+
+    // Enforce required role before allowing skip
+    assertCallerRole(task.step.requiredRole, dto.callerRole);
 
     // Mark the task as skipped (treated as APPROVED)
     task.status = TaskStatus.APPROVED;

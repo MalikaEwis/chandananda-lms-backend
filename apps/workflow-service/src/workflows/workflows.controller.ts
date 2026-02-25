@@ -13,6 +13,8 @@ import { AssignTaskDto } from './dto/assign-task.dto';
 import { ClaimTaskDto } from './dto/claim-task.dto';
 import { CompleteNonApprovalTaskDto } from './dto/complete-non-approval-task.dto';
 import { SkipTaskDto } from './dto/skip-task.dto';
+import { CancelWorkflowDto } from './dto/cancel-workflow.dto';
+import { MarkRegisteredDto } from './dto/mark-registered.dto';
 
 @Controller()
 export class WorkflowsController {
@@ -73,5 +75,15 @@ export class WorkflowsController {
   @MessagePattern('workflows.task.skipOptional')
   skipOptionalTask(@Payload() dto: SkipTaskDto) {
     return this.tasks.skipOptionalTask(dto);
+  }
+
+  @MessagePattern('workflows.instance.cancel')
+  cancelInstance(@Payload() dto: CancelWorkflowDto) {
+    return this.runtime.cancelInstance(dto);
+  }
+
+  @MessagePattern('workflows.instance.markRegistered')
+  markRegistered(@Payload() dto: MarkRegisteredDto) {
+    return this.runtime.markRegistered(dto);
   }
 }

@@ -1,6 +1,7 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RpcException } from '@nestjs/microservices';
+import { ClientProxy, RpcException } from '@nestjs/microservices';
+import { firstValueFrom } from 'rxjs';
 import { In, MoreThan, Not, QueryFailedError, Repository } from 'typeorm';
 import { WorkflowTemplate } from './entities/workflow-template.entity';
 import { WorkflowStep } from './entities/workflow-step.entity';
@@ -11,6 +12,7 @@ import { StartWorkflowDto } from './dto/start-workflow.dto';
 import { CompleteTaskDto } from './dto/complete-task.dto';
 import { CancelWorkflowDto } from './dto/cancel-workflow.dto';
 import { MarkRegisteredDto } from './dto/mark-registered.dto';
+import { USER_SERVICE_CLIENT } from './constants';
 
 // Terminal statuses — a new instance may only be started when the previous one reached one of these
 const TERMINAL_STATUSES = [WorkflowStatus.APPROVED, WorkflowStatus.REJECTED, WorkflowStatus.CANCELLED];
@@ -31,6 +33,8 @@ function assertCallerRole(requiredRole: string | null, callerRole: string | unde
 
 @Injectable()
 export class WorkflowRuntimeService {
+  private readonly logger = new Logger(WorkflowRuntimeService.name);
+
   constructor(
     @InjectRepository(WorkflowTemplate)
     private templateRepo: Repository<WorkflowTemplate>,
@@ -40,14 +44,116 @@ export class WorkflowRuntimeService {
     private instanceRepo: Repository<WorkflowInstance>,
     @InjectRepository(WorkflowTask)
     private taskRepo: Repository<WorkflowTask>,
+    @Inject(USER_SERVICE_CLIENT)
+    private userClient: ClientProxy,
   ) {}
+
+  /**
+   * Fires after a STUDENT_ADMISSION workflow reaches terminal APPROVED status.
+   * Non-blocking — errors are logged but never propagate to the caller.
+   */
+  private async registerApprovedStudent(
+    businessReference: string,
+    tenantDomain: string,
+  ): Promise<void> {
+    const admissionNo = `ADM-${Date.now().toString().slice(-6)}`;
+    try {
+      const result = await firstValueFrom(
+        this.userClient.send<{ id: number; admissionNo: string }>('students.create', {
+          businessReference,
+          tenantDomain,
+          admissionNo,
+        }),
+      );
+      console.log('Student registered:', result);
+    } catch (err) {
+      console.error(
+        `Failed to register student for ${businessReference}`,
+        (err as any)?.message ?? err,
+      );
+    }
+  }
+
+  /**
+   * Fires after a TEACHER_RECRUITMENT workflow reaches terminal APPROVED status.
+   * Generates a Archdiocese TIN and creates a Staff record in user-service via TCP.
+   * Non-blocking — errors are logged but never propagate to the caller.
+   */
+  private async registerApprovedStaff(
+    businessReference: string,
+    tenantDomain: string,
+  ): Promise<void> {
+    const part1 = Math.floor(Math.random() * 9) + 1;
+    const part2 = Math.floor(Math.random() * 999) + 1;
+    const part3 = Math.floor(Math.random() * 999) + 1;
+    const part4 = Math.floor(Math.random() * 9999) + 1;
+    const tinNumber = `${part1}/${String(part2).padStart(3, '0')}/${String(part3).padStart(3, '0')}/${String(part4).padStart(4, '0')}`;
+
+    this.logger.log(
+      `[WorkflowApproved] businessReference=${businessReference} tenantDomain=${tenantDomain} ` +
+      `— triggering staff registration, TIN=${tinNumber}`,
+    );
+
+    try {
+      const result = await firstValueFrom(
+        this.userClient.send<{ id: number; teacherIdentificationNumber: string }>(
+          'staff.createFromRecruitment',
+          { businessReference, tenantDomain, tinNumber, part1, part2, part3, part4 },
+        ),
+      );
+      console.log('Staff registered:', { id: result.id, teacherIdentificationNumber: result.teacherIdentificationNumber });
+    } catch (err) {
+      console.error(
+        `Failed to register staff for ${businessReference}`,
+        (err as any)?.message ?? err,
+      );
+    }
+  }
+
+  /**
+   * Best-effort auto-assign: queries user-service for the first ACTIVE user
+   * matching the step's requiredRole. Returns null fields when none is found
+   * or user-service is unreachable — ADMIN can assign manually in that case.
+   */
+  private async tryAutoAssign(
+    step: WorkflowStep,
+    tenantDomain: string,
+    actorUserId: number,
+  ): Promise<{
+    assignedToUserId: number | null;
+    assignedByUserId: number | null;
+    assignedAt: Date | null;
+  }> {
+    if (!step.requiredRole) {
+      return { assignedToUserId: null, assignedByUserId: null, assignedAt: null };
+    }
+    try {
+      const users = await firstValueFrom(
+        this.userClient.send<Array<{ id: number }>>('users.findByRole', {
+          role: step.requiredRole,
+          tenantDomain,
+        }),
+      );
+      if (Array.isArray(users) && users.length > 0) {
+        return {
+          assignedToUserId: users[0].id,
+          assignedByUserId: actorUserId,
+          assignedAt: new Date(),
+        };
+      }
+    } catch {
+      this.logger.warn(
+        `Auto-assign skipped for role '${step.requiredRole}': user-service unreachable`,
+      );
+    }
+    return { assignedToUserId: null, assignedByUserId: null, assignedAt: null };
+  }
 
   async startInstance(dto: StartWorkflowDto) {
     const tenantDomain = dto.tenantDomain
       ? dto.tenantDomain.trim().toLowerCase()
       : 'cc.lk';
 
-    // Validate template exists in tenant
     const template = await this.templateRepo.findOne({
       where: { templateCode: dto.templateCode, tenantDomain },
     });
@@ -59,7 +165,6 @@ export class WorkflowRuntimeService {
       });
     }
 
-    // Prevent duplicate instances for same business reference while not in a terminal state
     const existing = await this.instanceRepo.findOne({
       where: {
         tenantDomain,
@@ -76,7 +181,6 @@ export class WorkflowRuntimeService {
       });
     }
 
-    // Load the first step (lowest stepOrder)
     const firstStep = await this.stepRepo.findOne({
       where: { templateId: template.id },
       order: { stepOrder: 'ASC' },
@@ -89,7 +193,6 @@ export class WorkflowRuntimeService {
       });
     }
 
-    // Create the workflow instance (DB unique index guards against race-condition duplicates)
     let instance!: WorkflowInstance;
     try {
       instance = await this.instanceRepo.save(
@@ -114,12 +217,13 @@ export class WorkflowRuntimeService {
       throw err;
     }
 
-    // Create the initial pending task for the first step
+    const assignment = await this.tryAutoAssign(firstStep, tenantDomain, dto.startedByUserId);
+
     const task = await this.taskRepo.save(
       this.taskRepo.create({
         instanceId: instance.id,
         stepId: firstStep.id,
-        assignedToUserId: null,
+        ...assignment,
         status: TaskStatus.PENDING,
         comments: null,
         actedByUserId: null,
@@ -135,13 +239,11 @@ export class WorkflowRuntimeService {
       ? dto.tenantDomain.trim().toLowerCase()
       : 'cc.lk';
 
-    // Load task with instance and step relations
     const task = await this.taskRepo.findOne({
       where: { id: dto.taskId },
       relations: ['instance', 'step'],
     });
 
-    // Verify task exists and belongs to the correct tenant
     if (!task || task.instance.tenantDomain !== tenantDomain) {
       throw new RpcException({
         statusCode: 404,
@@ -150,7 +252,6 @@ export class WorkflowRuntimeService {
       });
     }
 
-    // Enforce sequential order — only current step's tasks can be completed
     const instance = task.instance;
     if (task.step.stepOrder !== instance.currentStepOrder) {
       throw new RpcException({
@@ -160,7 +261,6 @@ export class WorkflowRuntimeService {
       });
     }
 
-    // Prevent re-completion of an already-decided task
     if (task.status !== TaskStatus.PENDING) {
       throw new RpcException({
         statusCode: 409,
@@ -169,12 +269,11 @@ export class WorkflowRuntimeService {
       });
     }
 
-    // Enforce required role
     assertCallerRole(task.step.requiredRole, dto.callerRole);
 
-    // Record the decision on the task
-    task.status =
-      dto.action === 'APPROVE' ? TaskStatus.APPROVED : TaskStatus.REJECTED;
+    const newStatus = dto.action === 'APPROVE' ? TaskStatus.APPROVED : TaskStatus.REJECTED;
+    console.log(`Completing task ${task.id} with action ${dto.action} → status ${newStatus}`);
+    task.status = newStatus;
     task.comments = dto.comment ?? null;
     task.actedByUserId = dto.actorUserId;
     task.actedAt = new Date();
@@ -183,12 +282,10 @@ export class WorkflowRuntimeService {
     let nextTasks: WorkflowTask[] = [];
 
     if (dto.action === 'REJECT') {
-      // Rejection closes the workflow immediately
       instance.status = WorkflowStatus.REJECTED;
       instance.completedAt = new Date();
       await this.instanceRepo.save(instance);
     } else {
-      // Find the very next step in sequence
       const nextStep = await this.stepRepo.findOne({
         where: {
           templateId: instance.templateId,
@@ -198,17 +295,17 @@ export class WorkflowRuntimeService {
       });
 
       if (nextStep) {
-        // Advance to the next step
         instance.currentStepOrder = nextStep.stepOrder;
         instance.status = WorkflowStatus.UNDER_REVIEW;
         await this.instanceRepo.save(instance);
 
-        // Create the pending task for the next step
+        const assignment = await this.tryAutoAssign(nextStep, tenantDomain, dto.actorUserId);
+
         const nextTask = await this.taskRepo.save(
           this.taskRepo.create({
             instanceId: instance.id,
             stepId: nextStep.id,
-            assignedToUserId: null,
+            ...assignment,
             status: TaskStatus.PENDING,
             comments: null,
             actedByUserId: null,
@@ -221,6 +318,21 @@ export class WorkflowRuntimeService {
         instance.status = WorkflowStatus.APPROVED;
         instance.completedAt = new Date();
         await this.instanceRepo.save(instance);
+
+        const template = await this.templateRepo.findOne({ where: { id: instance.templateId } });
+        const templateCode = template?.templateCode ?? '';
+
+        this.logger.log(
+          `[WorkflowApproved] businessReference=${instance.businessReference} ` +
+          `tenantDomain=${instance.tenantDomain} templateCode=${templateCode}`,
+        );
+
+        if (templateCode === 'TEACHER_RECRUITMENT_V1') {
+          await this.registerApprovedStaff(instance.businessReference, instance.tenantDomain);
+        } else {
+          this.logger.log(`— triggering student registration`);
+          await this.registerApprovedStudent(instance.businessReference, instance.tenantDomain);
+        }
       }
     }
 
@@ -266,7 +378,6 @@ export class WorkflowRuntimeService {
       });
     }
 
-    // Cancel all PENDING tasks for this instance
     const pendingTasks = await this.taskRepo.find({
       where: { instanceId: instance.id, status: TaskStatus.PENDING },
     });

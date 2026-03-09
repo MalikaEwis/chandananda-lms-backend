@@ -70,4 +70,10 @@ export class UsersController {
   ) {
     return this.users.listUsers(payload.tenantDomain, payload.schoolId);
   }
+
+  @MessagePattern('users.findByRole')
+  findByRole(@Payload() payload: { role: string; tenantDomain?: string }) {
+    const tenantDomain = payload.tenantDomain?.trim().toLowerCase() ?? 'cc.lk';
+    return this.users.findByRole(payload.role, tenantDomain);
+  }
 }

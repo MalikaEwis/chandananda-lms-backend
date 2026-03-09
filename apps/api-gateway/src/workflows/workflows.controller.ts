@@ -20,9 +20,13 @@ import { JwtAuthGuard } from '../auth/jwt.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 
-// Shared error extractor — handles all three RpcException shapes
+// Shared error extractor — resolves the first candidate that carries a numeric statusCode.
+// NestJS TCP delivers RpcException payloads at different nesting depths depending on
+// how the microservice threw (flat, single-wrapped, or double-wrapped).
 function rpcError(err: any) {
-  const payload = err?.error?.error ?? err?.error ?? err;
+  const candidates = [err?.error?.error, err?.error, err];
+  const payload =
+    candidates.find((c) => c != null && typeof c === 'object' && c.statusCode != null) ?? err;
   const statusCode = payload?.statusCode ?? HttpStatus.INTERNAL_SERVER_ERROR;
   const message = Array.isArray(payload?.message)
     ? payload.message.join(', ')
@@ -49,6 +53,40 @@ export class WorkflowsController {
     return firstValueFrom(
       this.workflowClient
         .send('workflows.template.create', { ...body, tenantDomain })
+        .pipe(catchError(rpcError)),
+    );
+  }
+
+  /**
+   * Idempotent seed for STUDENT_ADMISSION_V1 (Chandananda SRS 4-step).
+   * Safe to call repeatedly — replaces steps if template already exists.
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @Post('seed-student-admission')
+  async seedStudentAdmission(@Req() req: Request) {
+    const tenantDomain = req.tenantDomain ?? 'cc.lk';
+
+    return firstValueFrom(
+      this.workflowClient
+        .send('workflows.seed.studentAdmission', { tenantDomain })
+        .pipe(catchError(rpcError)),
+    );
+  }
+
+  /**
+   * Idempotent seed for TEACHER_RECRUITMENT_V1 (Archdiocese 9-step).
+   * Safe to call repeatedly — replaces steps if template already exists.
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @Post('seed-teacher-recruitment')
+  async seedTeacherRecruitment(@Req() req: Request) {
+    const tenantDomain = req.tenantDomain ?? 'cc.lk';
+
+    return firstValueFrom(
+      this.workflowClient
+        .send('workflows.seed.teacherRecruitment', { tenantDomain })
         .pipe(catchError(rpcError)),
     );
   }
@@ -122,6 +160,8 @@ export class WorkflowsController {
     @Query('requiredRole') requiredRole?: string,
     @Query('templateCode') templateCode?: string,
     @Query('module') module?: string,
+    @Query('instanceId') instanceId?: string,
+    @Query('businessReference') businessReference?: string,
   ) {
     const tenantDomain = req.tenantDomain ?? 'cc.lk';
 
@@ -134,6 +174,8 @@ export class WorkflowsController {
           ...(requiredRole && { requiredRole }),
           ...(templateCode && { templateCode }),
           ...(module && { module }),
+          ...(instanceId && { instanceId: Number(instanceId) }),
+          ...(businessReference && { businessReference }),
         })
         .pipe(catchError(rpcError)),
     );
@@ -154,6 +196,32 @@ export class WorkflowsController {
     return firstValueFrom(
       this.workflowClient
         .send('workflows.task.complete', {
+          taskId: Number(taskId),
+          tenantDomain,
+          callerRole,
+          ...body,
+        })
+        .pipe(catchError(rpcError)),
+    );
+  }
+
+  /**
+   * Hard-reject any task (any step type) with a required reason.
+   * Marks instance REJECTED and bulk-cancels remaining PENDING tasks.
+   */
+  @UseGuards(JwtAuthGuard)
+  @Post('tasks/:taskId/reject')
+  async rejectTask(
+    @Req() req: Request,
+    @Param('taskId') taskId: string,
+    @Body() body: { actorUserId: number; reason: string },
+  ) {
+    const tenantDomain = req.tenantDomain ?? 'cc.lk';
+    const callerRole = (req as any).user?.role as string | undefined;
+
+    return firstValueFrom(
+      this.workflowClient
+        .send('workflows.task.reject', {
           taskId: Number(taskId),
           tenantDomain,
           callerRole,
@@ -250,6 +318,83 @@ export class WorkflowsController {
           tenantDomain,
           callerRole,
           ...body,
+        })
+        .pipe(catchError(rpcError)),
+    );
+  }
+
+  // ─── Interview endpoints ───────────────────────────────────────────────────
+
+  @UseGuards(JwtAuthGuard)
+  @Post('tasks/:taskId/trigger-interview')
+  async triggerInterview(
+    @Req() req: Request,
+    @Param('taskId') taskId: string,
+    @Body()
+    body: {
+      actorUserId: number;
+      comment?: string;
+      payload: {
+        interview: {
+          meetingProvider: 'ZOOM' | 'GOOGLE_MEET' | 'MS_TEAMS' | 'CUSTOM';
+          meetingUrl: string;
+          scheduledAt: string;
+          recipients: { userId: number; email: string }[];
+          notes?: string;
+        };
+      };
+    },
+  ) {
+    const tenantDomain = req.tenantDomain ?? 'cc.lk';
+    const callerRole = (req as any).user?.role as string | undefined;
+
+    return firstValueFrom(
+      this.workflowClient
+        .send('workflows.task.updateInterviewLink', {
+          taskId: Number(taskId),
+          tenantDomain,
+          callerRole,
+          actorUserId: body.actorUserId,
+          comment: body.comment,
+          payload: body.payload,
+        })
+        .pipe(catchError(rpcError)),
+    );
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Post('tasks/:taskId/interview-result')
+  async recordInterviewResult(
+    @Req() req: Request,
+    @Param('taskId') taskId: string,
+    @Body()
+    body: {
+      actorUserId: number;
+      comment?: string;
+      payload: {
+        interviewOutcome: 'PASSED' | 'FAILED' | 'NO_SHOW' | 'RESCHEDULE' | 'PENDING';
+        score?: number;
+        completedAt?: string;
+        provider?: string;
+        meetingUrl?: string;
+        notes?: string;
+      };
+    },
+  ) {
+    const tenantDomain = req.tenantDomain ?? 'cc.lk';
+    const callerRole = (req as any).user?.role as string | undefined;
+
+    return firstValueFrom(
+      this.workflowClient
+        .send('workflows.task.completeNonApproval', {
+          taskId: Number(taskId),
+          tenantDomain,
+          callerRole,
+          actorUserId: body.actorUserId,
+          result: 'DONE' as const,
+          comment: body.comment,
+          payload: body.payload,
+          requiredStepType: 'INTERVIEW',
         })
         .pipe(catchError(rpcError)),
     );

@@ -23,6 +23,7 @@ export enum WorkflowStatus {
 
 export enum TaskStatus {
   PENDING = 'PENDING',
+  IN_PROGRESS = 'IN_PROGRESS',
   APPROVED = 'APPROVED',
   REJECTED = 'REJECTED',
 }

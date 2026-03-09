@@ -1,6 +1,6 @@
-import { IsIn, IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 
-export class CompleteNonApprovalTaskDto {
+export class UpdateTaskPayloadDto {
   @IsInt()
   @Min(1)
   taskId: number;
@@ -8,9 +8,6 @@ export class CompleteNonApprovalTaskDto {
   @IsInt()
   @Min(1)
   actorUserId: number;
-
-  @IsIn(['DONE', 'FAILED'])
-  result: 'DONE' | 'FAILED';
 
   @IsString()
   @IsOptional()
@@ -26,8 +23,4 @@ export class CompleteNonApprovalTaskDto {
   @IsString()
   @IsOptional()
   callerRole?: string;
-
-  @IsString()
-  @IsOptional()
-  requiredStepType?: string;
 }

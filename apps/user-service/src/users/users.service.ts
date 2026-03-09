@@ -6,7 +6,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { RpcException } from '@nestjs/microservices';
 import { Repository } from 'typeorm';
-import { User } from './entities/user.entity';
+import { User, UserRole } from './entities/user.entity';
 import { School } from './entities/school.entity';
 import { CreateUserDto } from './dto/create-user.dto';
 
@@ -159,6 +159,14 @@ export class UsersService {
       .getMany();
 
     return users;
+  }
+
+  async findByRole(role: string, tenantDomain: string): Promise<User[]> {
+    const normalized = tenantDomain ? tenantDomain.trim().toLowerCase() : 'cc.lk';
+    return this.repo.find({
+      where: { role: role as UserRole, tenantDomain: normalized, status: 'ACTIVE' },
+      order: { createdAt: 'ASC' },
+    });
   }
 
   async listUsers(tenantDomain?: string, schoolId?: number) {

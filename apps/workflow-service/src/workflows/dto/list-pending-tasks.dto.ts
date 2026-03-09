@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString } from 'class-validator';
+import { IsInt, IsOptional, IsString, Min } from 'class-validator';
 
 export class ListPendingTasksDto {
   @IsString()
@@ -24,4 +24,15 @@ export class ListPendingTasksDto {
   @IsString()
   @IsOptional()
   module?: string;
+
+  /** Filter to a specific workflow instance */
+  @IsInt()
+  @Min(1)
+  @IsOptional()
+  instanceId?: number;
+
+  /** Filter by business reference (e.g. APP-007) */
+  @IsString()
+  @IsOptional()
+  businessReference?: string;
 }

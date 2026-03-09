@@ -55,6 +55,16 @@ export class WorkflowQueryService {
       qb.andWhere('template.module = :module', { module: dto.module });
     }
 
+    if (dto.instanceId !== undefined) {
+      qb.andWhere('task.instanceId = :instanceId', { instanceId: dto.instanceId });
+    }
+
+    if (dto.businessReference) {
+      qb.andWhere('instance.businessReference = :businessReference', {
+        businessReference: dto.businessReference,
+      });
+    }
+
     return qb.orderBy('task.createdAt', 'DESC').getMany();
   }
 

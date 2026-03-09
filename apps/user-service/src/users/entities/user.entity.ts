@@ -15,7 +15,10 @@ export type UserRole =
   | 'TEACHER'
   | 'PARENT'
   | 'STUDENT'
-  | 'STAFF';
+  | 'STAFF'
+  | 'SECTION_HEAD'
+  | 'INTERVIEW_PANEL'
+  | 'ARCHDIOCESE_ADMIN';
 
 @Entity({ name: 'users' })
 @Index(['email', 'tenantDomain'], { unique: true })

@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
+import { ClientsModule, Transport } from '@nestjs/microservices';
 import { WorkflowTemplate } from './entities/workflow-template.entity';
 import { WorkflowStep } from './entities/workflow-step.entity';
 import { WorkflowInstance } from './entities/workflow-instance.entity';
@@ -10,6 +11,8 @@ import { WorkflowQueryService } from './workflow-query.service';
 import { WorkflowTaskService } from './workflow-task.service';
 import { WorkflowsController } from './workflows.controller';
 
+import { USER_SERVICE_CLIENT } from './constants';
+
 @Module({
   imports: [
     TypeOrmModule.forFeature([
@@ -17,6 +20,14 @@ import { WorkflowsController } from './workflows.controller';
       WorkflowStep,
       WorkflowInstance,
       WorkflowTask,
+    ]),
+    // TCP client to user-service — used for role-based auto-assignment
+    ClientsModule.register([
+      {
+        name: USER_SERVICE_CLIENT,
+        transport: Transport.TCP,
+        options: { port: 4002, retryAttempts: 3, retryDelay: 1000 },
+      },
     ]),
   ],
   controllers: [WorkflowsController],

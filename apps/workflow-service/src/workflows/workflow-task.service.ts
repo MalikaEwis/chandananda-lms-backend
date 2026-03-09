@@ -1,14 +1,29 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { RpcException } from '@nestjs/microservices';
-import { MoreThan, Repository } from 'typeorm';
+import { ClientProxy, RpcException } from '@nestjs/microservices';
+import { firstValueFrom } from 'rxjs';
+import { In, MoreThan, Repository } from 'typeorm';
 import { WorkflowTask } from './entities/workflow-task.entity';
 import { WorkflowInstance } from './entities/workflow-instance.entity';
 import { WorkflowStep } from './entities/workflow-step.entity';
 import { TaskStatus, WorkflowStatus, StepType } from './enums';
+import { AssignTaskDto } from './dto/assign-task.dto';
+import { ClaimTaskDto } from './dto/claim-task.dto';
+import { CompleteNonApprovalTaskDto } from './dto/complete-non-approval-task.dto';
+import { SkipTaskDto } from './dto/skip-task.dto';
+import { UpdateTaskPayloadDto } from './dto/update-task-payload.dto';
+import { RejectTaskDto } from './dto/reject-task.dto';
+import { USER_SERVICE_CLIENT } from './constants';
 
 // Roles that bypass per-step role restrictions
 const SUPERUSER_ROLES = ['ADMIN', 'SUPER_ADMIN'];
+
+// Terminal statuses used when bulk-cancelling remaining tasks on hard-reject
+const TERMINAL_STATUSES: WorkflowStatus[] = [
+  WorkflowStatus.APPROVED,
+  WorkflowStatus.REJECTED,
+  WorkflowStatus.CANCELLED,
+];
 
 function assertCallerRole(requiredRole: string | null, callerRole: string | undefined): void {
   if (!requiredRole) return;
@@ -21,13 +36,10 @@ function assertCallerRole(requiredRole: string | null, callerRole: string | unde
   }
 }
 
-import { AssignTaskDto } from './dto/assign-task.dto';
-import { ClaimTaskDto } from './dto/claim-task.dto';
-import { CompleteNonApprovalTaskDto } from './dto/complete-non-approval-task.dto';
-import { SkipTaskDto } from './dto/skip-task.dto';
-
 @Injectable()
 export class WorkflowTaskService {
+  private readonly logger = new Logger(WorkflowTaskService.name);
+
   constructor(
     @InjectRepository(WorkflowTask)
     private taskRepo: Repository<WorkflowTask>,
@@ -35,7 +47,68 @@ export class WorkflowTaskService {
     private instanceRepo: Repository<WorkflowInstance>,
     @InjectRepository(WorkflowStep)
     private stepRepo: Repository<WorkflowStep>,
+    @Inject(USER_SERVICE_CLIENT)
+    private userClient: ClientProxy,
   ) {}
+
+  /** Mirrors the same hook in WorkflowRuntimeService — called when a non-approval step is the last one */
+  private async registerApprovedStudent(
+    businessReference: string,
+    tenantDomain: string,
+  ): Promise<void> {
+    const admissionNo = `ADM-${Date.now().toString().slice(-6)}`;
+    try {
+      const result = await firstValueFrom(
+        this.userClient.send<{ id: number; admissionNo: string }>('students.create', {
+          businessReference,
+          tenantDomain,
+          admissionNo,
+        }),
+      );
+      console.log(
+        `Student registered: admissionNo=${result.admissionNo} id=${result.id} ref=${businessReference}`,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Failed to register student for ref=${businessReference}: ${(err as any)?.message ?? err}`,
+      );
+    }
+  }
+
+  /** Best-effort auto-assign — mirrors the same helper in WorkflowRuntimeService */
+  private async tryAutoAssign(
+    step: WorkflowStep,
+    tenantDomain: string,
+    actorUserId: number,
+  ): Promise<{
+    assignedToUserId: number | null;
+    assignedByUserId: number | null;
+    assignedAt: Date | null;
+  }> {
+    if (!step.requiredRole) {
+      return { assignedToUserId: null, assignedByUserId: null, assignedAt: null };
+    }
+    try {
+      const users = await firstValueFrom(
+        this.userClient.send<Array<{ id: number }>>('users.findByRole', {
+          role: step.requiredRole,
+          tenantDomain,
+        }),
+      );
+      if (Array.isArray(users) && users.length > 0) {
+        return {
+          assignedToUserId: users[0].id,
+          assignedByUserId: actorUserId,
+          assignedAt: new Date(),
+        };
+      }
+    } catch {
+      this.logger.warn(
+        `Auto-assign skipped for role '${step.requiredRole}': user-service unreachable`,
+      );
+    }
+    return { assignedToUserId: null, assignedByUserId: null, assignedAt: null };
+  }
 
   async assignTask(dto: AssignTaskDto) {
     const tenantDomain = dto.tenantDomain
@@ -97,10 +170,8 @@ export class WorkflowTaskService {
       });
     }
 
-    // Enforce required role before allowing claim
     assertCallerRole(task.step.requiredRole, dto.callerRole);
 
-    // Prevent claim if already assigned to someone else
     if (
       task.assignedToUserId !== null &&
       task.assignedToUserId !== dto.claimantUserId
@@ -140,7 +211,6 @@ export class WorkflowTaskService {
 
     const instance = task.instance;
 
-    // Enforce sequential rule
     if (task.step.stepOrder !== instance.currentStepOrder) {
       throw new RpcException({
         statusCode: 409,
@@ -149,8 +219,8 @@ export class WorkflowTaskService {
       });
     }
 
-    // Must be PENDING
-    if (task.status !== TaskStatus.PENDING) {
+    // Accept PENDING or IN_PROGRESS (IN_PROGRESS = interview link dispatched, awaiting outcome)
+    if (task.status !== TaskStatus.PENDING && task.status !== TaskStatus.IN_PROGRESS) {
       throw new RpcException({
         statusCode: 409,
         message: 'Task already completed',
@@ -158,10 +228,16 @@ export class WorkflowTaskService {
       });
     }
 
-    // Enforce required role
     assertCallerRole(task.step.requiredRole, dto.callerRole);
 
-    // This endpoint is for non-approval steps only
+    if (dto.requiredStepType && task.step.stepType !== dto.requiredStepType) {
+      throw new RpcException({
+        statusCode: 409,
+        message: `This endpoint is only for ${dto.requiredStepType} tasks`,
+        error: 'Conflict',
+      });
+    }
+
     if (task.step.stepType === StepType.APPROVAL) {
       throw new RpcException({
         statusCode: 409,
@@ -170,7 +246,6 @@ export class WorkflowTaskService {
       });
     }
 
-    // Enforce assignment — if task is assigned to someone else, deny
     if (
       task.assignedToUserId !== null &&
       task.assignedToUserId !== dto.actorUserId
@@ -182,9 +257,9 @@ export class WorkflowTaskService {
       });
     }
 
-    // Record the outcome on the task
-    task.status =
-      dto.result === 'DONE' ? TaskStatus.APPROVED : TaskStatus.REJECTED;
+    const newStatus = dto.result === 'DONE' ? TaskStatus.APPROVED : TaskStatus.REJECTED;
+    console.log(`Completing task ${task.id} with result ${dto.result} → status ${newStatus}`);
+    task.status = newStatus;
     task.actedByUserId = dto.actorUserId;
     task.actedAt = new Date();
     task.comments = dto.comment ?? null;
@@ -199,7 +274,6 @@ export class WorkflowTaskService {
       instance.completedAt = new Date();
       await this.instanceRepo.save(instance);
     } else {
-      // Advance workflow: same logic as approval flow
       const nextStep = await this.stepRepo.findOne({
         where: {
           templateId: instance.templateId,
@@ -213,13 +287,13 @@ export class WorkflowTaskService {
         instance.status = WorkflowStatus.UNDER_REVIEW;
         await this.instanceRepo.save(instance);
 
+        const assignment = await this.tryAutoAssign(nextStep, tenantDomain, dto.actorUserId);
+
         const nextTask = await this.taskRepo.save(
           this.taskRepo.create({
             instanceId: instance.id,
             stepId: nextStep.id,
-            assignedToUserId: null,
-            assignedByUserId: null,
-            assignedAt: null,
+            ...assignment,
             taskType: null,
             status: TaskStatus.PENDING,
             comments: null,
@@ -233,6 +307,12 @@ export class WorkflowTaskService {
         instance.status = WorkflowStatus.APPROVED;
         instance.completedAt = new Date();
         await this.instanceRepo.save(instance);
+
+        this.logger.log(
+          `[WorkflowApproved] businessReference=${instance.businessReference} ` +
+          `tenantDomain=${instance.tenantDomain} — triggering student registration`,
+        );
+        await this.registerApprovedStudent(instance.businessReference, instance.tenantDomain);
       }
     }
 
@@ -287,10 +367,8 @@ export class WorkflowTaskService {
       });
     }
 
-    // Enforce required role before allowing skip
     assertCallerRole(task.step.requiredRole, dto.callerRole);
 
-    // Mark the task as skipped (treated as APPROVED)
     task.status = TaskStatus.APPROVED;
     task.actedByUserId = dto.actorUserId;
     task.actedAt = new Date();
@@ -299,7 +377,6 @@ export class WorkflowTaskService {
 
     let nextTasks: WorkflowTask[] = [];
 
-    // Advance workflow to the next step
     const nextStep = await this.stepRepo.findOne({
       where: {
         templateId: instance.templateId,
@@ -313,13 +390,13 @@ export class WorkflowTaskService {
       instance.status = WorkflowStatus.UNDER_REVIEW;
       await this.instanceRepo.save(instance);
 
+      const assignment = await this.tryAutoAssign(nextStep, tenantDomain, dto.actorUserId);
+
       const nextTask = await this.taskRepo.save(
         this.taskRepo.create({
           instanceId: instance.id,
           stepId: nextStep.id,
-          assignedToUserId: null,
-          assignedByUserId: null,
-          assignedAt: null,
+          ...assignment,
           taskType: null,
           status: TaskStatus.PENDING,
           comments: null,
@@ -333,12 +410,156 @@ export class WorkflowTaskService {
       instance.status = WorkflowStatus.APPROVED;
       instance.completedAt = new Date();
       await this.instanceRepo.save(instance);
+
+      this.logger.log(
+        `[WorkflowApproved] businessReference=${instance.businessReference} ` +
+        `tenantDomain=${instance.tenantDomain} — triggering student registration`,
+      );
+      await this.registerApprovedStudent(instance.businessReference, instance.tenantDomain);
     }
 
     return {
       message: 'Task skipped',
       instanceStatus: instance.status,
       nextTasks: nextTasks.length > 0 ? nextTasks : undefined,
+    };
+  }
+
+  async updateInterviewLink(dto: UpdateTaskPayloadDto) {
+    const tenantDomain = dto.tenantDomain
+      ? dto.tenantDomain.trim().toLowerCase()
+      : 'cc.lk';
+
+    const task = await this.taskRepo.findOne({
+      where: { id: dto.taskId },
+      relations: ['instance', 'step'],
+    });
+
+    if (!task || task.instance.tenantDomain !== tenantDomain) {
+      throw new RpcException({
+        statusCode: 404,
+        message: 'Task not found',
+        error: 'Not Found',
+      });
+    }
+
+    if (task.step.stepType !== StepType.INTERVIEW) {
+      throw new RpcException({
+        statusCode: 409,
+        message: 'This endpoint is only for INTERVIEW tasks',
+        error: 'Conflict',
+      });
+    }
+
+    if (task.status === TaskStatus.APPROVED || task.status === TaskStatus.REJECTED) {
+      throw new RpcException({
+        statusCode: 409,
+        message: 'Task already completed',
+        error: 'Conflict',
+      });
+    }
+
+    assertCallerRole(task.step.requiredRole, dto.callerRole);
+
+    if (task.status === TaskStatus.PENDING) {
+      task.status = TaskStatus.IN_PROGRESS;
+    }
+
+    task.comments = dto.comment ?? task.comments;
+    task.payloadJson = dto.payload !== undefined ? JSON.stringify(dto.payload) : task.payloadJson;
+    task.actedByUserId = dto.actorUserId;
+    task.actedAt = new Date();
+    await this.taskRepo.save(task);
+
+    return {
+      message: 'Interview link saved',
+      taskId: task.id,
+      taskStatus: task.status,
+    };
+  }
+
+  /**
+   * Hard-reject any task (any step type) with a required reason.
+   * Sets task → REJECTED, instance → REJECTED, and bulk-cancels all
+   * remaining PENDING/IN_PROGRESS tasks on the instance.
+   */
+  async rejectTask(dto: RejectTaskDto) {
+    const tenantDomain = dto.tenantDomain
+      ? dto.tenantDomain.trim().toLowerCase()
+      : 'cc.lk';
+
+    const task = await this.taskRepo.findOne({
+      where: { id: dto.taskId },
+      relations: ['instance', 'step'],
+    });
+
+    if (!task || task.instance.tenantDomain !== tenantDomain) {
+      throw new RpcException({
+        statusCode: 404,
+        message: 'Task not found',
+        error: 'Not Found',
+      });
+    }
+
+    const instance = task.instance;
+
+    if (TERMINAL_STATUSES.includes(instance.status)) {
+      throw new RpcException({
+        statusCode: 409,
+        message: `Workflow is already in terminal status: ${instance.status}`,
+        error: 'Conflict',
+      });
+    }
+
+    if (task.step.stepOrder !== instance.currentStepOrder) {
+      throw new RpcException({
+        statusCode: 409,
+        message: 'Cannot reject task out of sequence',
+        error: 'Conflict',
+      });
+    }
+
+    // Accept PENDING or IN_PROGRESS (e.g. interview was triggered but outcome is reject)
+    if (task.status !== TaskStatus.PENDING && task.status !== TaskStatus.IN_PROGRESS) {
+      throw new RpcException({
+        statusCode: 409,
+        message: 'Task already completed',
+        error: 'Conflict',
+      });
+    }
+
+    assertCallerRole(task.step.requiredRole, dto.callerRole);
+
+    task.status = TaskStatus.REJECTED;
+    task.comments = dto.reason;
+    task.actedByUserId = dto.actorUserId;
+    task.actedAt = new Date();
+    await this.taskRepo.save(task);
+
+    // Bulk-cancel any other PENDING/IN_PROGRESS tasks on this instance (safety net)
+    const remaining = await this.taskRepo.find({
+      where: { instanceId: instance.id, status: In([TaskStatus.PENDING, TaskStatus.IN_PROGRESS]) },
+    });
+    const toCancel = remaining.filter((t) => t.id !== task.id);
+    if (toCancel.length > 0) {
+      for (const t of toCancel) {
+        t.status = TaskStatus.REJECTED;
+        t.actedByUserId = dto.actorUserId;
+        t.actedAt = new Date();
+        t.comments = `Rejected (cascade from task ${task.id}): ${dto.reason}`;
+      }
+      await this.taskRepo.save(toCancel);
+    }
+
+    instance.status = WorkflowStatus.REJECTED;
+    instance.completedAt = new Date();
+    await this.instanceRepo.save(instance);
+
+    return {
+      message: 'Task rejected',
+      instanceStatus: instance.status,
+      rejectedTaskId: task.id,
+      cascadedRejections: toCancel.length,
     };
   }
 }

@@ -8,6 +8,7 @@ import { SchoolsController } from './schools/schools.controller';
 import { WorkflowsController } from './workflows/workflows.controller';
 import { StudentsController } from './students/students.controller';
 import { StaffController } from './staff/staff.controller';
+import { AttendanceController } from './attendance/attendance.controller';
 import { MicroservicesModule } from './microservices/microservices.module';
 import { TenantMiddleware } from './middleware/tenant.middleware';
 
@@ -17,7 +18,7 @@ import { TenantMiddleware } from './middleware/tenant.middleware';
     MicroservicesModule,
     AuthModule,
   ],
-  controllers: [AppController, UsersController, SchoolsController, WorkflowsController, StudentsController, StaffController],
+  controllers: [AppController, UsersController, SchoolsController, WorkflowsController, StudentsController, StaffController, AttendanceController],
   providers: [AppService],
 })
 export class AppModule implements NestModule {

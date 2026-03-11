@@ -257,6 +257,48 @@ export class WorkflowTemplatesService {
   }
 
   /**
+   * Idempotent seed for TEACHER_REGISTRATION_CHANDANANDA (3-step SRS online submission).
+   * Safe to call multiple times.
+   */
+  async seedChandanandaTeacher(tenantDomain?: string) {
+    return this.seedTemplate({
+      templateCode: 'TEACHER_REGISTRATION_CHANDANANDA',
+      name: 'Teacher Registration (Chandananda)',
+      workflowType: WorkflowType.TEACHER_RECRUITMENT,
+      description:
+        'Chandananda SRS — 3-step teacher registration: ' +
+        'Application Submission → Panel Qualification Review → Final Decision',
+      steps: [
+        {
+          stepName: 'Application Submission',
+          stepOrder: 1,
+          stepType: StepType.REVIEW,
+          requiredRole: 'ADMIN',
+          isOptional: true,
+          description: 'Initial application review and completeness check',
+        },
+        {
+          stepName: 'Panel Qualification Review',
+          stepOrder: 2,
+          stepType: StepType.APPROVAL,
+          requiredRole: 'PANEL_MEMBER',
+          isOptional: false,
+          description: 'Panel reviews candidate qualifications and approves for final decision',
+        },
+        {
+          stepName: 'Final Decision',
+          stepOrder: 3,
+          stepType: StepType.APPROVAL,
+          requiredRole: 'PRINCIPAL',
+          isOptional: false,
+          description: 'Principal makes final appointment decision',
+        },
+      ],
+      tenantDomain,
+    });
+  }
+
+  /**
    * Idempotent seed for TEACHER_RECRUITMENT_V1 (Archdiocese 9-step).
    * Safe to call multiple times.
    */

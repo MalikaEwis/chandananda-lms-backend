@@ -75,6 +75,23 @@ export class WorkflowsController {
   }
 
   /**
+   * Idempotent seed for TEACHER_REGISTRATION_CHANDANANDA (3-step SRS).
+   * Safe to call repeatedly — replaces steps if template already exists.
+   */
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @Post('seed-teacher-chandananda')
+  async seedChandanandaTeacher(@Req() req: Request) {
+    const tenantDomain = req.tenantDomain ?? 'cc.lk';
+
+    return firstValueFrom(
+      this.workflowClient
+        .send('workflows.seed.chandanandaTeacher', { tenantDomain })
+        .pipe(catchError(rpcError)),
+    );
+  }
+
+  /**
    * Idempotent seed for TEACHER_RECRUITMENT_V1 (Archdiocese 9-step).
    * Safe to call repeatedly — replaces steps if template already exists.
    */

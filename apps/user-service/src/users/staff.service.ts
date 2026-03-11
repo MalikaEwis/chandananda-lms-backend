@@ -4,6 +4,13 @@ import { Repository } from 'typeorm';
 import { Staff } from './entities/staff.entity';
 import type { FindOptionsWhere } from 'typeorm';
 
+export interface CreateStaffFromRegistrationPayload {
+  businessReference: string;
+  tenantDomain: string;
+  nameInFull?: string;
+  nicNumber?: string;
+}
+
 export interface CreateStaffFromRecruitmentPayload {
   businessReference: string;
   tenantDomain: string;
@@ -76,6 +83,48 @@ export class StaffService {
     );
 
     console.log('Staff created from recruitment:', staff.teacherIdentificationNumber);
+    return staff;
+  }
+
+  async createStaffFromRegistration(payload: CreateStaffFromRegistrationPayload): Promise<Staff> {
+    const tenantDomain = payload.tenantDomain
+      ? payload.tenantDomain.trim().toLowerCase()
+      : 'cc.lk';
+
+    const staff = await this.repo.save(
+      this.repo.create({
+        // No TIN in Chandananda flow — use placeholder values
+        personalIdPart1: 0,
+        personalIdPart2: 0,
+        personalIdPart3: 0,
+        personalIdPart4: 0,
+        teacherIdentificationNumber: `REG-${payload.businessReference}`,
+        nameInFull: payload.nameInFull ?? `Teacher ${payload.businessReference}`,
+        presentCategory: 'Contract',
+        designation: 'Teacher',
+        homeAddress: null,
+        nicNumber: payload.nicNumber ?? null,
+        religion: null,
+        telephoneNumbers: null,
+        email: null,
+        dateOfBirth: null,
+        dateOfFirstAppointment: null,
+        presentService: 'Teaching',
+        retirementDate: null,
+        gmsInterviewAndConfirmationLetter: null,
+        confirmationEffectiveFrom: null,
+        noConfirmationLetter: true,
+        fixedTermContract006: false,
+        temporaryCadre007: false,
+        noFile: false,
+        resigned: false,
+        businessReference: payload.businessReference,
+        tenantDomain,
+        status: 'ACTIVE',
+      }),
+    );
+
+    console.log('Chandananda teacher registered:', staff.teacherIdentificationNumber);
     return staff;
   }
 }

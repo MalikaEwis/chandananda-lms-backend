@@ -19,6 +19,13 @@ export interface DailySummaryPayload {
   date: string; // YYYY-MM-DD
 }
 
+export interface ParentAttendanceSummaryPayload {
+  tenantDomain: string;
+  studentIds: number[];
+  dateFrom: string; // YYYY-MM-DD
+  dateTo: string;   // YYYY-MM-DD
+}
+
 @Injectable()
 export class AttendanceService {
   constructor(
@@ -118,5 +125,52 @@ export class AttendanceService {
     console.log(`Summary query for date: ${normalizedDate}, tenantDomain: ${tenantDomain}, found ${total} records`);
 
     return { date: normalizedDate, tenantDomain, total, present, absent, late, excused };
+  }
+
+  async getParentAttendanceSummary(payload: ParentAttendanceSummaryPayload): Promise<
+    Array<{
+      studentId: number;
+      dateFrom: string;
+      dateTo: string;
+      records: Array<{ date: string; status: string; notes: string | null }>;
+      summary: { total: number; present: number; absent: number; late: number; excused: number };
+    }>
+  > {
+    const { tenantDomain, studentIds, dateFrom, dateTo } = payload;
+    const normFrom = new Date(dateFrom).toISOString().split('T')[0];
+    const normTo = new Date(dateTo).toISOString().split('T')[0];
+
+    console.log(`Parent attendance query: studentIds=[${studentIds}] from=${normFrom} to=${normTo}`);
+
+    const results = await Promise.all(
+      studentIds.map(async (studentId) => {
+        const rows = await this.repo
+          .createQueryBuilder('ar')
+          .where('ar.tenantDomain = :tenantDomain', { tenantDomain })
+          .andWhere('ar.studentId = :studentId', { studentId: String(studentId) })
+          .andWhere('DATE(ar.date) >= :from', { from: normFrom })
+          .andWhere('DATE(ar.date) <= :to', { to: normTo })
+          .orderBy('ar.date', 'ASC')
+          .getMany();
+
+        const records = rows.map((r) => ({
+          date: new Date(r.date).toISOString().split('T')[0],
+          status: r.status,
+          notes: r.notes,
+        }));
+
+        const summary = {
+          total: rows.length,
+          present: rows.filter((r) => r.status === 'PRESENT').length,
+          absent: rows.filter((r) => r.status === 'ABSENT').length,
+          late: rows.filter((r) => r.status === 'LATE').length,
+          excused: rows.filter((r) => r.status === 'EXCUSED').length,
+        };
+
+        return { studentId, dateFrom: normFrom, dateTo: normTo, records, summary };
+      }),
+    );
+
+    return results;
   }
 }

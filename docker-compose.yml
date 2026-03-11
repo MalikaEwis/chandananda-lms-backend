@@ -39,8 +39,19 @@ services:
     volumes:
       - mysql_attendance_data:/var/lib/mysql
 
+  mysql-notices:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: notices_db
+    ports:
+      - "3311:3306"
+    volumes:
+      - mysql_notices_data:/var/lib/mysql
+
 volumes:
   mysql_auth_data:
   mysql_user_data:
   mysql_workflow_data:
   mysql_attendance_data:
+  mysql_notices_data:

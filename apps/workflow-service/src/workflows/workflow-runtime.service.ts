@@ -111,6 +111,36 @@ export class WorkflowRuntimeService {
   }
 
   /**
+   * Fires after a TEACHER_REGISTRATION_CHANDANANDA workflow reaches APPROVED.
+   * Creates a minimal Staff record (no TIN/probation) in user-service via TCP.
+   * Non-blocking — errors are logged but never propagate to the caller.
+   */
+  private async registerChandanandaTeacher(
+    businessReference: string,
+    tenantDomain: string,
+  ): Promise<void> {
+    this.logger.log(
+      `[WorkflowApproved] businessReference=${businessReference} tenantDomain=${tenantDomain} ` +
+      `— triggering Chandananda teacher registration`,
+    );
+
+    try {
+      const result = await firstValueFrom(
+        this.userClient.send<{ id: number; teacherIdentificationNumber: string }>(
+          'staff.createFromRegistration',
+          { businessReference, tenantDomain },
+        ),
+      );
+      console.log('Chandananda teacher registered:', { id: result.id, teacherIdentificationNumber: result.teacherIdentificationNumber });
+    } catch (err) {
+      console.error(
+        `Failed to register Chandananda teacher for ${businessReference}`,
+        (err as any)?.message ?? err,
+      );
+    }
+  }
+
+  /**
    * Best-effort auto-assign: queries user-service for the first ACTIVE user
    * matching the step's requiredRole. Returns null fields when none is found
    * or user-service is unreachable — ADMIN can assign manually in that case.
@@ -329,6 +359,8 @@ export class WorkflowRuntimeService {
 
         if (templateCode === 'TEACHER_RECRUITMENT_V1') {
           await this.registerApprovedStaff(instance.businessReference, instance.tenantDomain);
+        } else if (templateCode === 'TEACHER_REGISTRATION_CHANDANANDA') {
+          await this.registerChandanandaTeacher(instance.businessReference, instance.tenantDomain);
         } else {
           this.logger.log(`— triggering student registration`);
           await this.registerApprovedStudent(instance.businessReference, instance.tenantDomain);

@@ -1,7 +1,7 @@
 import { Controller } from '@nestjs/common';
 import { MessagePattern, Payload } from '@nestjs/microservices';
 import { StaffService } from './staff.service';
-import type { CreateStaffFromRecruitmentPayload } from './staff.service';
+import type { CreateStaffFromRecruitmentPayload, CreateStaffFromRegistrationPayload } from './staff.service';
 
 @Controller()
 export class StaffController {
@@ -15,5 +15,10 @@ export class StaffController {
   @MessagePattern('staff.createFromRecruitment')
   createFromRecruitment(@Payload() payload: CreateStaffFromRecruitmentPayload) {
     return this.staff.createStaffFromRecruitment(payload);
+  }
+
+  @MessagePattern('staff.createFromRegistration')
+  createFromRegistration(@Payload() payload: CreateStaffFromRegistrationPayload) {
+    return this.staff.createStaffFromRegistration(payload);
   }
 }

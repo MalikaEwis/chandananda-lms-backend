@@ -53,6 +53,12 @@ export class WorkflowsController {
     return this.templates.seedTeacherRecruitment(payload.tenantDomain);
   }
 
+  /** Idempotent seed for TEACHER_REGISTRATION_CHANDANANDA (3-step SRS) */
+  @MessagePattern('workflows.seed.chandanandaTeacher')
+  seedChandanandaTeacher(@Payload() payload: { tenantDomain?: string }) {
+    return this.templates.seedChandanandaTeacher(payload.tenantDomain);
+  }
+
   // ─── Instances ────────────────────────────────────────────────────────────
 
   @MessagePattern('workflows.instance.start')

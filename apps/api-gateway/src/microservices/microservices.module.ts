@@ -41,6 +41,15 @@ import { MICROSERVICES_CLIENTS } from 'src/constants';
           retryDelay: 1000,
         },
       },
+      {
+        name: MICROSERVICES_CLIENTS.NOTICES_SERVICE,
+        transport: Transport.TCP,
+        options: {
+          port: 4005,
+          retryAttempts: 5,
+          retryDelay: 1000,
+        },
+      },
     ]),
   ],
   exports: [ClientsModule],

@@ -108,10 +108,15 @@ export class ParentController {
 
     const studentIds = (linkedStudents ?? []).map((s) => s.studentId);
 
-    // 2. Fetch notices from notices-service
+    // 2. Fetch notices from notices-service (PARENT role filter, includes linked studentIds)
     const notices = await firstValueFrom(
       this.noticesClient
-        .send('notices.parent.my', { parentUserId, studentIds, tenantDomain })
+        .send('notices.my', {
+          tenantDomain,
+          userId: String(parentUserId),
+          role: 'PARENT',
+          studentIds: studentIds.map(String),
+        })
         .pipe(catchError(rpcError)),
     );
 
